@@ -1,0 +1,53 @@
+name: Mirror images to ghcr.io (skopeo, full multi-arch)
+
+# Unlike mirror-images.yml (docker pull --platform linux/arm64, single-arch),
+# this copies the complete manifest list so linux/arm64 is guaranteed present
+# for the DGX Spark (aarch64) without pinning the image to one architecture.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - src: langgenius/dify-sandbox:0.2.15
+            name: dify-sandbox
+            tag: "0.2.15"
+          - src: semitechnologies/weaviate:1.27.0
+            name: weaviate
+            tag: "1.27.0"
+          - src: langgenius/dify-plugin-daemon:0.6.1-local
+            name: dify-plugin-daemon
+            tag: "0.6.1-local"
+          - src: ubuntu/squid:latest
+            name: squid
+            tag: "latest"
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
+      - name: Log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Copy full multi-arch image
+        run: |
+          skopeo copy --all \
+            "docker://docker.io/${{ matrix.src }}" \
+            "docker://ghcr.io/${{ github.repository_owner }}/dify-image-mirror/${{ matrix.name }}:${{ matrix.tag }}"
+
+      - name: Verify linux/arm64 is present at destination
+        run: |
+          skopeo inspect --raw \
+            "docker://ghcr.io/${{ github.repository_owner }}/dify-image-mirror/${{ matrix.name }}:${{ matrix.tag }}" > manifest.json
+          jq -r '.manifests[]?.platform | "\(.os)/\(.architecture)"' manifest.json
+          jq -e '[.manifests[]?.platform | select(.os == "linux" and .architecture == "arm64")] | length > 0' manifest.json
